@@ -1,54 +1,52 @@
-# Durable Objects Starter
+# Hanamikoji Online
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/templates/tree/main/hello-world-do-template)
+A Cloudflare Worker + Durable Object version of Hanamikoji for two players.
 
-<!-- dash-content-start -->
+## What It Does
 
-This is a [Durable Object](https://developers.cloudflare.com/durable-objects/) starter template. It comes with a `sayHello` method that returns `Hello World!`.
+- Serves the web app from the Worker
+- Creates private two-player game rooms
+- Generates separate Player 1 and Player 2 invite links
+- Keeps the full game state inside one Durable Object per room
+- Sends each browser only the state that player is allowed to see
+- Validates moves server-side
+- Uses polling for updates, which is enough for this turn-based MVP
 
-<!-- dash-content-end -->
-
-Outside of this repo, you can start a new project with this template using [C3](https://developers.cloudflare.com/pages/get-started/c3/) (the `create-cloudflare` CLI):
-
-```bash
-npm create cloudflare@latest -- --template=cloudflare/templates/hello-world-do-template
-```
-
-## Getting Started
-
-First, run:
+## Local Development
 
 ```bash
 npm install
-# or
-yarn install
-# or
-pnpm install
-# or
-bun install
-```
-
-Then run the development server (using the package manager of your choice):
-
-```bash
 npm run dev
 ```
 
-Open [http://localhost:8787](http://localhost:8787) with your browser to see the result.
+Open:
 
-You can start editing the project by modifying `src/index.ts`.
+```text
+http://localhost:8787
+```
 
-## Deploying To Production
+Click **Create Room**, then send the Player 2 link to your friend.
 
-| Command             | Action                                |
-| :------------------ | :------------------------------------ |
-| `npm run deploy`    | Deploy your application to Cloudflare |
-| `npm wrangler tail` | View real-time logs for all Workers   |
+## Deploy
 
-## Learn More
+```bash
+npm run deploy
+```
 
-To learn more about Next.js, take a look at the following resources:
+If this repo is connected to Cloudflare through GitHub, pushing to the connected branch may also trigger your configured Cloudflare deployment.
 
-- [Durable Objects](https://developers.cloudflare.com/durable-objects/) - learn about Durable Objects
+## Checks
 
-Your feedback and contributions are welcome!
+```bash
+npm run check
+```
+
+## Game Rules Implemented
+
+- Geisha values: `2, 2, 2, 3, 3, 4, 5`
+- 21 item cards
+- 1 hidden removed card per round
+- Private hands
+- Secret, Trade-off, Gift, and Competition actions
+- Sticky victory markers on ties
+- Win by 4 Geisha or 11+ charm points
