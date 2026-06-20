@@ -48,10 +48,30 @@ const GEISHAS: Geisha[] = [
 	{ id: "pink", name: "Pink", value: 5, color: "#ec4899" },
 ];
 const ACTIONS = [
-	{ id: "secret" as const, name: "Secret", cardCount: 1 },
-	{ id: "tradeOff" as const, name: "Trade-off", cardCount: 2 },
-	{ id: "gift" as const, name: "Gift", cardCount: 3 },
-	{ id: "competition" as const, name: "Competition", cardCount: 4 },
+	{
+		id: "secret" as const,
+		name: "Secret",
+		cardCount: 1,
+		help: "Hide 1 card. It is revealed and scored at the end of the round.",
+	},
+	{
+		id: "tradeOff" as const,
+		name: "Trade-off",
+		cardCount: 2,
+		help: "Remove 2 cards from this round. They will not score.",
+	},
+	{
+		id: "gift" as const,
+		name: "Gift",
+		cardCount: 3,
+		help: "Offer 3 cards. Your opponent takes 1, and you score the other 2.",
+	},
+	{
+		id: "competition" as const,
+		name: "Competition",
+		cardCount: 4,
+		help: "Split 4 cards into two pairs. Your opponent chooses one pair to score.",
+	},
 ];
 const CARD_BY_ID = Object.fromEntries(createItemDeck().map((card) => [card.id, card]));
 
@@ -509,6 +529,9 @@ let token = params.get("token");
 let state = null;
 let selected = [];
 let message = "";
+let previousHand = null;
+let leavingCards = new Set();
+let leavingSetIndex = null;
 const app = document.querySelector("#app");
 document.addEventListener("click", async (event) => {
 	const el = event.target.closest("[data-action]");
@@ -540,13 +563,26 @@ async function refresh() {
 	render();
 }
 async function move(payload) {
+	const leaving = cardsLeavingFor(payload);
+	if (leaving.cards.length || leaving.setIndex !== null) {
+		leavingCards = new Set(leaving.cards);
+		leavingSetIndex = leaving.setIndex;
+		render();
+		await sleep(220);
+	}
 	const res = await fetch(\`/api/rooms/\${room}/move\`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ player, token, move: payload }) });
 	const data = await res.json();
 	if (!res.ok) message = data.error || "Move failed.";
 	else { state = data; selected = []; message = ""; }
+	leavingCards = new Set();
+	leavingSetIndex = null;
 	render();
 }
-function render() { app.innerHTML = header() + (message ? \`<div class="notice">\${esc(message)}</div>\` : "") + body(); }
+function render() {
+	const handBeforeRender = state?.players?.[player]?.hand || null;
+	app.innerHTML = header() + (message ? \`<div class="notice">\${esc(message)}</div>\` : "") + body();
+	previousHand = handBeforeRender ? new Set(handBeforeRender) : null;
+}
 function header() { return \`<header class="topbar"><div><p class="eyebrow">Hanamikoji Online</p><h1>Play with a friend</h1></div><button class="button primary" data-action="create">Create Room</button></header>\`; }
 function body() {
 	if (state?.invite) {
@@ -564,23 +600,101 @@ function instructions() {
 	if (state.status === "gameOver") return \`<div class="result-box"><strong>\${name(state.winner)} wins</strong><span>\${esc(state.winReason)}</span></div>\`;
 	if (state.status === "roundComplete") return \`<div class="action-callout"><strong>Round scored.</strong><span>Tied markers stay where they are.</span><button class="button primary" data-action="start-next-round">Start Next Round</button></div>\`;
 	if (state.status === "choice" && state.offer.to === player) {
-		if (state.offer.type === "gift") return \`<div class="action-callout"><strong>\${name(state.offer.from)} offered a Gift.</strong><span>Choose 1 card for yourself.</span><div class="offer-row">\${state.offer.cards.map((id) => \`<button class="card offered" style="\${cardStyle(id)}" data-action="choose-gift" data-card-id="\${id}">\${label(id)}</button>\`).join("")}</div></div>\`;
-		return \`<div class="action-callout"><strong>\${name(state.offer.from)} started a Competition.</strong><span>Choose 1 set for yourself.</span><div class="set-row">\${state.offer.sets.map((set, index) => \`<button class="set-choice" data-action="choose-competition" data-set-index="\${index}"><span>Set \${index + 1}</span><span>\${set.map(label).join(" + ")}</span></button>\`).join("")}</div></div>\`;
+		if (state.offer.type === "gift") return \`<div class="action-callout"><strong>\${name(state.offer.from)} offered a Gift.</strong><span>Choose 1 card for yourself.</span><div class="offer-row">\${state.offer.cards.map((id) => \`<button class="card offered \${leavingCards.has(id) ? "leaving" : ""}" style="\${cardStyle(id)}" data-action="choose-gift" data-card-id="\${id}">\${label(id)}</button>\`).join("")}</div></div>\`;
+		return \`<div class="action-callout"><strong>\${name(state.offer.from)} started a Competition.</strong><span>Choose 1 set for yourself.</span><div class="set-row">\${state.offer.sets.map((set, index) => \`<button class="set-choice \${leavingSetIndex === index ? "leaving" : ""}" data-action="choose-competition" data-set-index="\${index}"><span>Set \${index + 1}</span><span>\${set.map(label).join(" + ")}</span></button>\`).join("")}</div></div>\`;
 	}
 	if (state.status === "choice") return \`<p class="muted">Waiting for \${name(state.offer.to)} to choose.</p>\`;
 	if (state.activePlayer === player) return \`<div class="action-callout"><strong>Your turn.</strong><span>You already drew. Select cards, then choose an unused action.</span></div>\`;
 	return \`<p class="muted">Waiting for \${name(state.activePlayer)}.</p>\`;
 }
-function actions(me) { const usable = state.status === "action" && state.activePlayer === player; return \`<div class="actions-grid">\${state.actions.map((action) => { const used = me.usedActions[action.id]; const disabled = !usable || used || selected.length !== action.cardCount; return \`<button class="action-card \${used ? "used" : ""}" data-action="use-action" data-game-action="\${action.id}" \${disabled ? "disabled" : ""}><span>\${action.name}</span><small>\${action.cardCount} card\${action.cardCount === 1 ? "" : "s"}\${used ? " used" : ""}</small></button>\`; }).join("")}</div><p class="selection-help">Selected: \${selected.length ? selected.map((id, i) => \`\${i + 1}. \${label(id)}\`).join(", ") : "none"}. For Competition, first 2 are Set 1 and next 2 are Set 2.</p>\`; }
-function hand(me) { const canSelect = state.status === "action" && state.activePlayer === player; return \`<div class="hand"><h3>Your hand</h3><div class="card-row">\${me.hand.map((id) => \`<button class="card \${selected.includes(id) ? "selected" : ""}" style="\${cardStyle(id)}" data-action="select-card" data-card-id="\${id}" \${canSelect ? "" : "disabled"}><span>\${label(id)}</span>\${selected.includes(id) ? \`<strong>\${selected.indexOf(id) + 1}</strong>\` : ""}</button>\`).join("")}</div></div>\`; }
+function actions(me) { const usable = state.status === "action" && state.activePlayer === player; return \`<div class="actions-grid">\${state.actions.map((action) => { const used = me.usedActions[action.id]; const disabled = !usable || used || selected.length !== action.cardCount; return \`<button class="action-card \${used ? "used" : ""}" data-help="\${esc(action.help)}" data-action="use-action" data-game-action="\${action.id}" \${disabled ? "disabled" : ""}><span>\${action.name}</span><small>\${action.cardCount} card\${action.cardCount === 1 ? "" : "s"}\${used ? " used" : ""}</small></button>\`; }).join("")}</div><p class="selection-help">Selected: \${selected.length ? selected.map((id, i) => \`\${i + 1}. \${handLabel(id)}\`).join(", ") : "none"}. For Competition, first 2 are Set 1 and next 2 are Set 2.</p>\`; }
+function hand(me) { const canSelect = state.status === "action" && state.activePlayer === player; return \`<div class="hand"><h3>Your hand</h3><div class="card-row">\${me.hand.map((id) => { const isNew = previousHand && !previousHand.has(id); const motion = leavingCards.has(id) ? "leaving" : isNew ? "drawn" : ""; return \`<button class="card \${selected.includes(id) ? "selected" : ""} \${motion}" style="\${cardStyle(id)}" data-action="select-card" data-card-id="\${id}" \${canSelect ? "" : "disabled"}><span>\${handLabel(id)}</span>\${selected.includes(id) ? \`<strong>\${selected.indexOf(id) + 1}</strong>\` : ""}</button>\`; }).join("")}</div></div>\`; }
 function logPanel() { return \`<section class="panel compact"><h2>Log</h2><ol class="log-list">\${state.log.slice(-10).reverse().map((entry) => \`<li>\${esc(entry.message)}</li>\`).join("")}</ol></section>\`; }
 function cardsFor(target, geishaId) { const p = state.players[target]; const tableau = Array.isArray(p.tableau) ? p.tableau : []; return tableau.filter((id) => state.cards[id]?.geishaId === geishaId); }
 function smallCards(ids) { return ids.length ? ids.map((id) => \`<span class="small-card" style="\${cardStyle(id)}">\${label(id).split(" ").map((x) => x[0]).join("")}</span>\`).join("") : \`<span class="empty-slot">none</span>\`; }
 function calculateScores(s) { const scores = { p1: { geishas: 0, points: 0 }, p2: { geishas: 0, points: 0 } }; for (const geisha of s.geishas) { const owner = s.markers[geisha.id]; if (owner) { scores[owner].geishas += 1; scores[owner].points += geisha.value; } } return scores; }
+function cardsLeavingFor(payload) {
+	if (payload.type === "useAction") return { cards: selected, setIndex: null };
+	if (payload.type === "chooseGift") return { cards: [payload.cardId], setIndex: null };
+	if (payload.type === "chooseCompetition" && state?.offer?.type === "competition") return { cards: state.offer.sets[payload.setIndex] || [], setIndex: payload.setIndex };
+	return { cards: [], setIndex: null };
+}
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+function handLabel(id) { const card = state.cards[id]; const geisha = state.geishas.find((g) => g.id === card.geishaId); return geisha.name; }
 function label(id) { const card = state.cards[id]; const geisha = state.geishas.find((g) => g.id === card.geishaId); return \`\${geisha.name} \${geisha.value}\`; }
 function cardStyle(id) { const card = state.cards[id]; const geisha = state.geishas.find((g) => g.id === card.geishaId); return \`--card-color:\${geisha.color}\`; }
 function name(p) { return p === "p1" ? "Player 1" : "Player 2"; }
 function esc(v) { return String(v).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;"); }
 `.replaceAll("\\`", "`").replaceAll("\\${", "${");
 
-const STYLES_CSS = `:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f2eb;color:#1f2933}*{box-sizing:border-box}body{margin:0;min-width:320px}button,a{font:inherit}#app{min-height:100vh;padding:20px}.topbar,.status-strip,.panel,.board-panel,.empty-state{border:1px solid #d6ccbd;background:rgba(255,252,247,.92);box-shadow:0 8px 30px rgba(74,55,33,.08)}.topbar{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:18px 20px;border-radius:8px}.eyebrow,.label{margin:0 0 4px;color:#7c6b5c;font-size:.78rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase}h1,h2,h3,p{margin-top:0}h1{margin-bottom:0;font-size:clamp(1.55rem,2vw,2.2rem)}h2{margin-bottom:10px;font-size:1.1rem}h3{margin-bottom:8px;font-size:.9rem}.button,.mini-button{display:inline-flex;align-items:center;justify-content:center;min-height:38px;border:1px solid #b9aa96;border-radius:6px;padding:8px 12px;background:#fffaf2;color:#2f261d;text-decoration:none;cursor:pointer}.button.primary{border-color:#075985;background:#0369a1;color:#fff}.mini-button{min-height:30px;padding:5px 9px;font-size:.82rem}.notice{margin:14px 0;border:1px solid #d9a441;border-radius:6px;padding:10px 12px;background:#fff7df}.empty-state{max-width:820px;margin:40px auto 0;border-radius:8px;padding:24px}.link-box{display:grid;grid-template-columns:80px 1fr auto;gap:10px;align-items:center;margin-top:12px;padding:10px;border:1px solid #eadfce;border-radius:8px}.link-box a{overflow-wrap:anywhere}.status-strip{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:12px;margin-top:14px;padding:14px;border-radius:8px}.status-strip strong{display:block;font-size:1rem}.game-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,410px);gap:16px;margin-top:16px}.board-panel,.panel{border-radius:8px;padding:16px}.section-title{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:12px}.section-title h2{margin-bottom:0}.section-title span,.muted,.selection-help{color:#756858;font-size:.9rem}.geisha-grid{display:grid;grid-template-columns:repeat(7,minmax(112px,1fr));gap:10px;overflow-x:auto;padding-bottom:4px}.geisha-card{min-width:112px;border:1px solid color-mix(in srgb,var(--accent) 45%,#d6ccbd);border-radius:8px;background:#fffaf2}.played-zone{display:flex;align-items:center;justify-content:center;min-height:56px;padding:6px;gap:4px;flex-wrap:wrap}.played-zone.top{border-bottom:1px solid #eadfce}.geisha-main{display:grid;justify-items:center;gap:6px;padding:12px 8px;border-bottom:1px solid #eadfce;background:color-mix(in srgb,var(--accent) 12%,#fffaf2)}.value{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:var(--accent);color:white;font-weight:800}.name{font-weight:800}.marker{display:inline-flex;min-height:24px;align-items:center;border-radius:999px;padding:3px 8px;background:#2f261d;color:#fff;font-size:.76rem;font-weight:800}.marker.center{background:#d8cbbb;color:#4c4035}.small-card{display:inline-grid;place-items:center;min-width:28px;height:28px;border:1px solid color-mix(in srgb,var(--card-color) 55%,#554437);border-radius:5px;background:color-mix(in srgb,var(--card-color) 16%,#fff);font-size:.72rem;font-weight:800}.empty-slot{color:#9a8b7d;font-size:.74rem}.action-callout,.result-box{display:grid;gap:8px;margin-bottom:14px;border:1px solid #bdd3df;border-radius:8px;padding:12px;background:#eef8fc}.result-box{border-color:#b7d1b2;background:#eef9eb}.actions-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0}.action-card{display:grid;gap:4px;min-height:66px;border:1px solid #b9aa96;border-radius:8px;padding:10px;background:#fffaf2;text-align:left;cursor:pointer}.action-card span{font-weight:800}.action-card.used{opacity:.56}.action-card:disabled,.card:disabled{cursor:not-allowed}.selection-help{min-height:38px;margin-bottom:14px}.hand{margin-top:12px}.card-row,.offer-row,.set-row{display:flex;flex-wrap:wrap;gap:8px}.card{position:relative;display:grid;place-items:center;min-width:82px;min-height:60px;border:2px solid color-mix(in srgb,var(--card-color) 55%,#554437);border-radius:8px;padding:8px;background:color-mix(in srgb,var(--card-color) 16%,#fff);color:#1f2933;font-weight:800;cursor:pointer}.card.selected{outline:3px solid #111827;outline-offset:2px}.card strong{position:absolute;top:-8px;right:-8px;display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:#111827;color:white;font-size:.8rem}.card.offered{min-width:96px}.private-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}.private-grid>div{min-height:86px;border:1px dashed #b9aa96;border-radius:8px;padding:10px}.private-grid p{margin-bottom:0;color:#5e5144}.set-choice{display:grid;gap:5px;min-width:160px;border:1px solid #9e8d79;border-radius:8px;padding:10px;background:#fffaf2;text-align:left;cursor:pointer}.set-choice span:first-child{font-weight:800}.panel.compact{margin-top:12px}.log-list{margin:0;padding-left:18px}.log-list li{margin-bottom:6px;color:#5e5144}@media(max-width:980px){#app{padding:12px}.topbar,.section-title{align-items:flex-start;flex-direction:column}.status-strip{grid-template-columns:repeat(2,minmax(120px,1fr))}.game-layout{grid-template-columns:1fr}}@media(max-width:560px){.status-strip,.actions-grid,.private-grid{grid-template-columns:1fr}.link-box{grid-template-columns:1fr}}`;
+const STYLES_CSS = `
+:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f2eb;color:#1f2933}
+*{box-sizing:border-box}
+body{margin:0;min-width:320px}
+button,a{font:inherit}
+#app{min-height:100vh;padding:20px}
+.topbar,.status-strip,.panel,.board-panel,.empty-state{border:1px solid #d6ccbd;background:rgba(255,252,247,.92);box-shadow:0 8px 30px rgba(74,55,33,.08)}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:18px;max-width:1406px;margin:0 auto;padding:18px 20px;border-radius:8px}
+.eyebrow,.label{margin:0 0 4px;color:#7c6b5c;font-size:.78rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+h1,h2,h3,p{margin-top:0}
+h1{margin-bottom:0;font-size:clamp(1.55rem,2vw,2.2rem)}
+h2{margin-bottom:10px;font-size:1.1rem}
+h3{margin-bottom:8px;font-size:.9rem}
+.button,.mini-button{display:inline-flex;align-items:center;justify-content:center;min-height:38px;border:1px solid #b9aa96;border-radius:6px;padding:8px 12px;background:#fffaf2;color:#2f261d;text-decoration:none;cursor:pointer}
+.button.primary{border-color:#075985;background:#0369a1;color:#fff}
+.mini-button{min-height:30px;padding:5px 9px;font-size:.82rem}
+.notice{max-width:1406px;margin:14px auto;border:1px solid #d9a441;border-radius:6px;padding:10px 12px;background:#fff7df}
+.empty-state{max-width:820px;margin:40px auto 0;border-radius:8px;padding:24px}
+.link-box{display:grid;grid-template-columns:80px 1fr auto;gap:10px;align-items:center;margin-top:12px;padding:10px;border:1px solid #eadfce;border-radius:8px}
+.link-box a{overflow-wrap:anywhere}
+.status-strip{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:12px;max-width:1406px;margin:14px auto 0;padding:14px;border-radius:8px}
+.status-strip strong{display:block;font-size:1rem}
+.game-layout{display:grid;grid-template-columns:minmax(0,980px) minmax(320px,410px);justify-content:center;align-items:start;gap:16px;max-width:1406px;margin:16px auto 0}
+.board-panel,.panel{border-radius:8px;padding:16px}
+.board-panel{overflow-x:auto}
+.section-title{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:12px}
+.section-title h2{margin-bottom:0}
+.section-title span,.muted,.selection-help{color:#756858;font-size:.9rem}
+.geisha-grid{display:grid;grid-template-columns:repeat(7,112px);gap:10px;width:max-content;padding-bottom:4px}
+.geisha-card{width:112px;border:1px solid color-mix(in srgb,var(--accent) 45%,#d6ccbd);border-radius:8px;background:#fffaf2}
+.played-zone{display:flex;align-items:center;justify-content:center;min-height:56px;padding:6px;gap:4px;flex-wrap:wrap}
+.played-zone.top{border-bottom:1px solid #eadfce}
+.geisha-main{display:grid;justify-items:center;gap:6px;padding:12px 8px;border-bottom:1px solid #eadfce;background:color-mix(in srgb,var(--accent) 12%,#fffaf2)}
+.value{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:var(--accent);color:white;font-weight:800}
+.name{font-weight:800}
+.marker{display:inline-flex;min-height:24px;align-items:center;border-radius:999px;padding:3px 8px;background:#2f261d;color:#fff;font-size:.76rem;font-weight:800}
+.marker.center{background:#d8cbbb;color:#4c4035}
+.small-card{display:inline-grid;place-items:center;min-width:28px;height:28px;border:1px solid color-mix(in srgb,var(--card-color) 55%,#554437);border-radius:5px;background:color-mix(in srgb,var(--card-color) 16%,#fff);font-size:.72rem;font-weight:800}
+.empty-slot{color:#9a8b7d;font-size:.74rem}
+.action-callout,.result-box{display:grid;gap:8px;margin-bottom:14px;border:1px solid #bdd3df;border-radius:8px;padding:12px;background:#eef8fc}
+.result-box{border-color:#b7d1b2;background:#eef9eb}
+.actions-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0}
+.action-card{position:relative;display:grid;gap:4px;min-height:66px;border:1px solid #b9aa96;border-radius:8px;padding:10px;background:#fffaf2;text-align:left;cursor:pointer}
+.action-card span{font-weight:800}
+.action-card.used{opacity:.56}
+.action-card::after{content:attr(data-help);position:absolute;left:8px;right:8px;bottom:calc(100% + 8px);z-index:10;border-radius:6px;padding:8px 10px;background:#2f261d;color:white;font-size:.78rem;font-weight:600;line-height:1.25;box-shadow:0 8px 20px rgba(31,24,18,.22);opacity:0;transform:translateY(4px);pointer-events:none;transition:opacity .15s ease,transform .15s ease}
+.action-card:hover::after,.action-card:focus-visible::after{opacity:1;transform:translateY(0)}
+.action-card:disabled,.card:disabled{cursor:not-allowed}
+.selection-help{min-height:38px;margin-bottom:14px}
+.hand{margin-top:12px}
+.card-row,.offer-row,.set-row{display:flex;flex-wrap:wrap;gap:8px}
+.card{position:relative;display:grid;place-items:center;min-width:82px;min-height:60px;border:2px solid color-mix(in srgb,var(--card-color) 55%,#554437);border-radius:8px;padding:8px;background:color-mix(in srgb,var(--card-color) 16%,#fff);color:#1f2933;font-weight:800;cursor:pointer;transition:transform .16s ease,box-shadow .16s ease,opacity .16s ease}
+.card:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 8px 18px rgba(54,42,31,.14)}
+.card.selected{outline:3px solid #111827;outline-offset:2px}
+.card strong{position:absolute;top:-8px;right:-8px;display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:#111827;color:white;font-size:.8rem}
+.card.offered{min-width:96px}
+.card.drawn{animation:card-drawn .45s ease both}
+.card.leaving,.set-choice.leaving{animation:card-leaving .22s ease both}
+.private-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}
+.private-grid>div{min-height:86px;border:1px dashed #b9aa96;border-radius:8px;padding:10px}
+.private-grid p{margin-bottom:0;color:#5e5144}
+.set-choice{display:grid;gap:5px;min-width:160px;border:1px solid #9e8d79;border-radius:8px;padding:10px;background:#fffaf2;text-align:left;cursor:pointer;transition:transform .16s ease,opacity .16s ease}
+.set-choice span:first-child{font-weight:800}
+.panel.compact{margin-top:12px}
+.log-list{margin:0;padding-left:18px}
+.log-list li{margin-bottom:6px;color:#5e5144}
+@keyframes card-drawn{0%{opacity:0;transform:translateY(-14px) scale(.94)}60%{opacity:1;transform:translateY(2px) scale(1.04)}100%{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes card-leaving{0%{opacity:1;transform:translateY(0) scale(1)}100%{opacity:0;transform:translateY(16px) scale(.86)}}
+@media(max-width:980px){#app{padding:12px}.topbar,.section-title{align-items:flex-start;flex-direction:column}.status-strip{grid-template-columns:repeat(2,minmax(120px,1fr))}.game-layout{grid-template-columns:1fr}}
+@media(max-width:560px){.status-strip,.actions-grid,.private-grid{grid-template-columns:1fr}.link-box{grid-template-columns:1fr}}
+`;
